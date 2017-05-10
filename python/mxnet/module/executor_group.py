@@ -329,8 +329,7 @@ class DataParallelExecutorGroup(object):
             A dictionary of name to `NDArray` auxiliary variable mapping.
         """
         for exec_ in self.execs:
-            exec_.copy_params_from(arg_params, aux_params)
-
+            exec_.copy_params_from(arg_params, aux_params, allow_extra_params=True)
     def get_params(self, arg_params, aux_params):
         """ Copy data from each executor to `arg_params` and `aux_params`.
 
