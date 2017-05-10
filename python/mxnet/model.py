@@ -96,25 +96,75 @@ def _update_params_on_kvstore(param_arrays, grad_arrays, kvstore):
         # pull back the weights
         kvstore.pull(index, arg_list, priority=-index)
 
+#def _update_params(param_arrays, grad_arrays, updater, num_device,
+#                   kvstore=None):
+#    """Perform update of param_arrays from grad_arrays not on kvstore."""
+#    for index, pair in enumerate(zip(param_arrays, grad_arrays)):
+#        arg_list, grad_list = pair
+#        if grad_list[0] is None:
+#            continue
+#        if kvstore:
+#            # push gradient, priority is negative index
+#            kvstore.push(index, grad_list, priority=-index)
+#            # pull back the sum gradients, to the same locations.
+#            kvstore.pull(index, grad_list, priority=-index)
+#        for k, p in enumerate(zip(arg_list, grad_list)):
+#            # faked an index here, to make optimizer create diff
+#            # state for the same index but on diff devs, TODO(mli)
+#            # use a better solution latter
+#            w, g = p
+#            updater(index*num_device+k, g, w)
 def _update_params(param_arrays, grad_arrays, updater, num_device,
-                   kvstore=None):
-    """Perform update of param_arrays from grad_arrays not on kvstore."""
-    for index, pair in enumerate(zip(param_arrays, grad_arrays)):
-        arg_list, grad_list = pair
-        if grad_list[0] is None:
-            continue
-        if kvstore:
-            # push gradient, priority is negative index
-            kvstore.push(index, grad_list, priority=-index)
-            # pull back the sum gradients, to the same locations.
-            kvstore.pull(index, grad_list, priority=-index)
-        for k, p in enumerate(zip(arg_list, grad_list)):
-            # faked an index here, to make optimizer create diff
-            # state for the same index but on diff devs, TODO(mli)
-            # use a better solution latter
-            w, g = p
-            updater(index*num_device+k, g, w)
+                   kvstore=None, param_names=None, arg_names=None):
+    """ Perform update of param_arrays from grad_arrays not on kvstore."""
+    # print ("param_arrays:", param_arrays)
+    # print ("grad_arrays:", grad_arrays)
+    if param_names==None and arg_names==None:
+        for index, pair in enumerate(zip(param_arrays, grad_arrays)):
+            arg_list, grad_list = pair
+            # print ("index:", index)
+            # print ("arg_list:", arg_list)
+            # print ("grad_list:", grad_list)
+            if grad_list[0] is None:
+                continue
+            if kvstore:
+                # push gradient, priority is negative index
+                kvstore.push(index, grad_list, priority=-index)
+                # pull back the sum gradients, to the same locations.
+                kvstore.pull(index, grad_list, priority=-index)
+            for k, p in enumerate(zip(arg_list, grad_list)):
+                # faked an index here, to make optimizer create diff
+                # state for the same index but on diff devs, TODO(mli)
+                # use a better solution latter
+                w, g = p
+                # print ("num_device:", num_device)
+                # print ("k:", k)
+                updater(index*num_device+k, g, w)
+    elif param_names!=None and arg_names!=None:
+        ctr = -1
+        for i, index in enumerate(arg_names):
+            if index in param_names:
+                ctr += 1
+                arg_list  = param_arrays[ctr]
+                grad_list = grad_arrays[ctr]
 
+                if grad_list[0] is None:
+                    continue
+                if kvstore:
+                    # push gradient, priority is negative index
+                    kvstore.push(ctr, grad_list, priority=-ctr)
+                    # pull back the sum gradients, to the same locations.
+                    kvstore.pull(ctr, grad_list, priority=-ctr)
+
+                for k, p in enumerate(zip(arg_list, grad_list)):
+                    w, g = p
+                    # This deos not support the diff device implemented in the 
+                    # if statement above. This is a hack for TreeLSTM application
+                    # with different structures per sample
+                    updater(index, g, w)
+    else:
+        raise AssertionError("Both arg_names (%s) and param_names (%s) shouls be fed."%(str(arg_names), str(param_names)))
+                   
 
 def _multiple_callbacks(callbacks, *args, **kwargs):
     """Sends args and kwargs to any configured callbacks.
