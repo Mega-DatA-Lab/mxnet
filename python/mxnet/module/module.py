@@ -566,7 +566,9 @@ class Module(BaseModule):
                            self._exec_group.grad_arrays,
                            updater=self._updater,
                            num_device=len(self._context),
-                           kvstore=self._kvstore)
+                           kvstore=self._kvstore,
+                           param_names=self._exec_group.param_names,
+                           arg_names=self._exec_group.arg_names)
 
     def get_outputs(self, merge_multi_context=True):
         """Get outputs of the previous forward computation.
