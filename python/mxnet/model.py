@@ -161,7 +161,8 @@ def _update_params(param_arrays, grad_arrays, updater, num_device,
                     # This deos not support the diff device implemented in the 
                     # if statement above. This is a hack for TreeLSTM application
                     # with different structures per sample
-                    updater(index, g, w)
+                    #updater(index, g, w)
+                    updater((index+'_%d_%d'%(num_device, k)), g, w)
     else:
         raise AssertionError("Both arg_names (%s) and param_names (%s) shouls be fed."%(str(arg_names), str(param_names)))
                    
