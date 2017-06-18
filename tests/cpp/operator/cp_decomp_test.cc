@@ -12,7 +12,8 @@
 #include <random>
 #include <algorithm>
 #include <functional>
-#include "operator/contrib/tensor/cp_decomp.h"
+#include "operator/contrib/cp_decomp.h"
+#include "operator/tensor/la_op_inline.h"
 
 namespace mxnet {
 namespace op {
@@ -112,8 +113,7 @@ TEST(CPDecomp, 2DTensor) {
   TensorContainer<cpu, 1, DType> diff_eigvals(eigvals.shape_);
   for (int i = 0; i < k; ++i)
     diff_eigvals[i] = eigvals[i] - eigvals0[i];
-  DType norm_diff_eigvals = mxnet::op::cp_decomp::nrm2<cpu, DType>
-    (eigvals.size(0), diff_eigvals.dptr_, 1);
+  DType norm_diff_eigvals = nrm2<DType>(eigvals.size(0), diff_eigvals.dptr_, 1);
   for (int i = 0; i < k; ++i)
     EXPECT_LE(norm_diff_eigvals, 1e-6);
 
@@ -186,8 +186,7 @@ TEST(CPDecomp, 3DTensor) {
   TensorContainer<cpu, 1, DType> diff_eigvals(eigvals.shape_);
   for (int i = 0; i < k; ++i)
     diff_eigvals[i] = eigvals[i] - eigvals0[i];
-  DType norm_diff_eigvals = mxnet::op::cp_decomp::nrm2<cpu, DType>
-    (eigvals.size(0), diff_eigvals.dptr_, 1);
+  DType norm_diff_eigvals = nrm2<DType>(eigvals.size(0), diff_eigvals.dptr_, 1);
   for (int i = 0; i < k; ++i)
     EXPECT_LE(norm_diff_eigvals, 1e-6);
 

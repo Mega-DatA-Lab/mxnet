@@ -30,7 +30,8 @@
 //      to catch simple mistakes when calling these wrappers.
 //    - Must support compilation without lapack-package but issue runtime error in this case.
 
-#include <dmlc/logging.h>
+#include <algorithm>
+#include "dmlc/logging.h"
 #include "mshadow/tensor.h"
 
 using namespace mshadow;
@@ -50,6 +51,14 @@ extern "C" {
 
   void sposv_(char *uplo, int *n, int *nrhs,
     float *a, int *lda, float *b, int *ldb, int *info);
+
+  void dgesdd_(char *jobz, int *m, int *n, double *a, int *lda, double *s,
+      double *u, int *ldu, double *vt, int *ldvt, double *work,
+      int *lwork, int *iwork, int *info);
+
+  void sgesdd_(char *jobz, int *m, int *n, float *a, int *lda, float *s,
+      float *u, int *ldu, float *vt, int *ldvt, float *work,
+      int *lwork, int *iwork, int *info);
 }
 
 #define MXNET_LAPACK_ROW_MAJOR 101
@@ -113,6 +122,7 @@ inline void flip<cpu, double>(int m, int n,
   MXNET_LAPACK_CWRAPPER1(spotri, float)
   MXNET_LAPACK_CWRAPPER1(dpotri, double)
 
+  // add matrix_layout handling to sposv
   inline int mxnet_lapack_sposv(int matrix_layout, char uplo, int n, int nrhs,
     float *a, int lda, float *b, int ldb) {
     int info;
@@ -129,6 +139,7 @@ inline void flip<cpu, double>(int m, int n,
     return info;
   }
 
+  // add matrix_layout handling to dposv
   inline int mxnet_lapack_dposv(int matrix_layout, char uplo, int n, int nrhs,
     double *a, int lda, double *b, int ldb) {
     int info;
@@ -142,6 +153,88 @@ inline void flip<cpu, double>(int m, int n,
       return info;
     }
     dposv_(&uplo, &n, &nrhs, a, &lda, b, &ldb, &info);
+    return info;
+  }
+
+  // add matrix_layout handling to sgesdd
+  inline int MXNET_LAPACK_sgesdd(int matrix_layout,
+    char jobz, int m, int n, float *a, int lda,
+    float *s, float *u, int ldu, float *vt, int ldvt) {
+    int info, lwork;
+    float *work, wkopt;
+    int *iwork = new int[8 * std::min(m, n)];
+
+    if (matrix_layout == MXNET_LAPACK_ROW_MAJOR) {
+      lwork = -1;
+      sgesdd_(&jobz, &n, &m, a, &lda, s, vt, &ldvt, u, &ldu,
+        &wkopt, &lwork, iwork, &info);
+      if (info != 0) {
+        delete [] iwork;
+        return info;
+      }
+
+      lwork = static_cast<int>(wkopt);
+      work = new float[lwork];
+      sgesdd_(&jobz, &n, &m, a, &lda, s, vt, &ldvt, u, &ldu,
+        work, &lwork, iwork, &info);
+    } else {
+      lwork = -1;
+      sgesdd_(&jobz, &m, &n, a, &lda, s, u, &ldu, vt, &ldvt,
+        &wkopt, &lwork, iwork, &info);
+      if (info != 0) {
+        delete [] iwork;
+        return info;
+      }
+
+      lwork = static_cast<int>(wkopt);
+      work = new float[lwork];
+      sgesdd_(&jobz, &m, &n, a, &lda, s, u, &ldu, vt, &ldvt,
+        work, &lwork, iwork, &info);
+    }
+
+    delete [] work;
+    delete [] iwork;
+    return info;
+  }
+
+  // add matrix_layout handling to dgesdd
+  inline int MXNET_LAPACK_dgesdd(int matrix_layout,
+    char jobz, int m, int n, double *a, int lda,
+    double *s, double *u, int ldu, double *vt, int ldvt) {
+    int info, lwork;
+    double *work, wkopt;
+    int *iwork = new int[8 * std::min(m, n)];
+
+    if (matrix_layout == MXNET_LAPACK_ROW_MAJOR) {
+      lwork = -1;
+      dgesdd_(&jobz, &n, &m, a, &lda, s, vt, &ldvt, u, &ldu,
+        &wkopt, &lwork, iwork, &info);
+      if (info != 0) {
+        delete [] iwork;
+        return info;
+      }
+
+      lwork = static_cast<int>(wkopt);
+      work = new double[lwork];
+      dgesdd_(&jobz, &n, &m, a, &lda, s, vt, &ldvt, u, &ldu,
+        work, &lwork, iwork, &info);
+    } else {
+      lwork = -1;
+      dgesdd_(&jobz, &m, &n, a, &lda, s, u, &ldu, vt, &ldvt,
+        &wkopt, &lwork, iwork, &info);
+      if (info != 0) {
+        delete [] iwork;
+        return info;
+      }
+
+      lwork = static_cast<int>(wkopt);
+      work = new double[lwork];
+      dgesdd_(&jobz, &m, &n, a, &lda, s, u, &ldu, vt, &ldvt,
+        work, &lwork, iwork, &info);
+    }
+
+    delete [] work;
+    delete [] iwork;
     return info;
   }
 
@@ -172,6 +265,9 @@ inline void flip<cpu, double>(int m, int n,
 
   MXNET_LAPACK_UNAVAILABLE(sposv)
   MXNET_LAPACK_UNAVAILABLE(dposv)
+  MXNET_LAPACK_UNAVAILABLE(sgesdd)
+  MXNET_LAPACK_UNAVAILABLE(dgesdd)
+
 
 #endif
 
@@ -190,5 +286,27 @@ inline int MXNET_LAPACK_posv<double>(int matrix_layout, char uplo, int n,
   int nrhs, double *a, int lda, double *b, int ldb) {
   return mxnet_lapack_dposv(matrix_layout, uplo, n, nrhs, a, lda, b, ldb);
 }
+
+template <typename DType>
+inline int MXNET_LAPACK_gesdd(int matrix_layout,
+  char jobz, int m, int n, DType *a, int lda,
+  DType *s, DType *u, int ldu, DType *vt, int ldvt);
+
+template <>
+inline int MXNET_LAPACK_gesdd<float>(int matrix_layout,
+  char jobz, int m, int n, float *a, int lda,
+  float *s, float *u, int ldu, float *vt, int ldvt) {
+  return MXNET_LAPACK_sgesdd(matrix_layout, jobz, m, n, a, lda,
+    s, u, ldu, vt, ldvt);
+}
+
+template <>
+inline int MXNET_LAPACK_gesdd<double>(int matrix_layout,
+  char jobz, int m, int n, double *a, int lda,
+  double *s, double *u, int ldu, double *vt, int ldvt) {
+  return MXNET_LAPACK_dgesdd(matrix_layout, jobz, m, n, a, lda,
+    s, u, ldu, vt, ldvt);
+}
+
 
 #endif  // MXNET_C_LAPACK_API_H_

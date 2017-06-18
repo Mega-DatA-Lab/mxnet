@@ -6,7 +6,9 @@
 #ifndef MXNET_OPERATOR_TENSOR_LA_OP_INLINE_H_
 #define MXNET_OPERATOR_TENSOR_LA_OP_INLINE_H_
 
+#include <cblas.h>
 #include <mxnet/c_lapack_api.h>
+#include "./la_op.h"
 
 namespace mxnet {
 namespace op {
@@ -329,6 +331,18 @@ struct sumlogdiag_backward {
   }
 };
 
+template <typename DType>
+inline DType nrm2(int n, DType *a, int lda);
+
+template <>
+inline float nrm2<float>(int n, float *a, int lda) {
+  return cblas_snrm2(n, a, lda);
+}
+
+template <>
+inline double nrm2<double>(int n, double *a, int lda) {
+  return cblas_dnrm2(n, a, lda);
+}
 }  // namespace op
 }  // namespace mxnet
 

@@ -6,7 +6,6 @@
  */
 #ifndef MXNET_OPERATOR_CONTRIB_CP_DECOMP_H_
 #define MXNET_OPERATOR_CONTRIB_CP_DECOMP_H_
-#include <mshadow/tensor.h>
 #include <vector>
 #include <cmath>
 #include <limits>
@@ -15,16 +14,20 @@
 #include <utility>
 #include <numeric>
 #include <iostream>
+#include "dmlc/logging.h"
+#include "mshadow/tensor.h"
+#include "./krprod.h"
 #include "./unfold.h"
-#include "./cp_decomp_linalg.h"
-#include "../../tensor/broadcast_reduce-inl.h"
+#include "../tensor/broadcast_reduce-inl.h"
+#include "../tensor/la_op_inline.h"
+#include "mxnet/c_lapack_api.h"
+
 
 namespace mxnet {
 namespace op {
 
 using namespace mshadow;
 using namespace mshadow::expr;
-using namespace mxnet::op::cp_decomp;
 
 template <typename DType>
 inline void print1DTensor_(const Tensor<cpu, 1, DType> &t);
@@ -51,8 +54,7 @@ inline DType CPDecompReconstructionError
 /*!
  * \brief Randomly initialise the transposed factor matrices for the CP Decomposition
  *
- * All factor matrices will be filled with random numbers from the standard Gaussian distribution. Optionally they could be orthogonalised.
- * This function is called by CPDecomp().
+ * All factor matrices will be filled with random numbers from the standard Gaussian distribution. Optionally they could be initialised with left singular vectors of the unfolded tensor.
  *
  * \param factors_T array of transposed factor matrices to be initialised
  * \param orthonormal whether to orthogonalise the factor matrices
@@ -67,42 +69,33 @@ inline int CPDecompInitFactors
   RandomEngine *generator);
 
 /*!
- * \brief Update one factor matrix during one step of the ALS algorithm for the CP Decomposition
+ * \brief Update one transposed factor matrix during one step of the ALS algorithm
  *
- * Given the unfolded tensor and all the remaining factor matrices, this function solves a least-squre problem
+ * This function first solves a least-squre problem for factors_T[mode] whilst fixing all the other factor matrices
  *
  *    min \lVert unfolding - [I; factors] \rVert_2
  *
- * then normalise all the columns of the newly updated factor matrix and record the norms of the columns into eigvals.
+ * where I is all-one eigenvector, then normalise the obtained factors_T[mode] by row.
  *
  * This function is called by CPDecomp().
  *
  * \param eigvals eigen-value vector to be updated
+ * \param factors_T array of transposed factor matrices
  * \param unfolding unfolded tensor along the specified mode
- * \param mode the dimension for which we update the factor matrix
- * \param kr_prod stores the intermediate Khatri-Rao products
- * \param hd_prod stores the intermediate Hadamard product
- * \param stream calculation stream (for GPU)
+ * \param mode the index of the transposed factor matrix to be updated
  * \return 0 if success, non-zero otherwise
  */
 template <typename DType>
 inline int CPDecompUpdate
   (Tensor<cpu, 1, DType> eigvals,
-  std::vector<Tensor<cpu, 2, DType> > factors,
+  std::vector<Tensor<cpu, 2, DType> > factors_T,
   const Tensor<cpu, 2, DType> &unfolding,
-  int mode,
-  std::vector<TensorContainer<cpu, 2, DType> > kr_prod,
-  TensorContainer<cpu, 2, DType> hd_prod,
-  Stream<cpu> *stream = NULL);
+  int mode);
 
 /*!
  * \brief Evaluates if the ALS algorithm has converged
  *
- * Evaluates if across two steps t, t+1 of the ALS algorithm, the norm of the change of a vector is less than or equal to eps times the norm of the vector at time t,
- *
- *   \lVert v^{(t+1)}-v^{(t)} \rVert_2 \le eps \lVert v^{(t)} \rVert_2,
- *
- * for the eigen-value vector and all the columns of all the factor matrices.
+ * Evaluates if across two steps of the ALS algorithm, the relative norm of error between the eigenvectors or every row of every transposed factor matrix is below a constant eps.
  *
  * \param eigvals eigen-value vector at time t+1
  * \param factors_T transposed factor matrices at time t+1
@@ -120,7 +113,7 @@ inline bool CPDecompConverged
   DType eps);
 
 /*!
- * \brief Sort the eigenvalue vector in descending order and re-arrange the columns in factor matrices accordingly
+ * \brief Sort the eigenvalue vector in descending order and the rows of transposed factor matrices accordingly
  *
  * \param eigvals eigenvalue vector obtained from CPDecomp
  * \param factors_T transposed factor matrices obtained from CPDecomp
@@ -133,7 +126,7 @@ inline void CPDecompSortResults
 /*!
  * \brief Perform CANDECOMP/PARAFAC Decomposition on CPU
  *
- * This function performs CP Decompsition for input tensor of arbitrary order and shape on CPU. At success, it populates `eigvals` and `factors_T` with the eigen-value vector sorted in descending order and transposed factor matrices along each dimension, and returns 0; otherwise returns 1.
+ * This function performs CP Decompsition for input tensor of arbitrary order and shape on CPU. At success, it populates `eigvals` and `factors_T` with the eigen-value vector sorted in descending order and transposed factor matrices, and returns 0; otherwise returns 1.
  *
  * Internally it uses an iterative algorithm with random initial matrices and may not necessarily converge to the same solution from run to run.
  *
@@ -155,8 +148,8 @@ inline int CPDecomp
   const Tensor<cpu, order, DType> &in,
   int k,
   DType eps = 1e-6,
-  int max_iter = 100,
-  int restarts = 10,
+  int max_iter = 200,
+  int restarts = 5,
   bool init_orthonormal_factors = true,
   Stream<cpu> *stream = NULL) {
   CHECK_GE(order, 2);
@@ -188,7 +181,7 @@ inline int CPDecomp
   }
 
   // Allocate space for old factor matrices A, B, C, etc,
-  // transposed as well, with the same shapes as factors_T
+  // transposed as well, of the same shapes as factors_T
   Tensor<cpu, 1, DType> currEigvals(Shape1(k)), oldEigvals(Shape1(k));
   AllocSpace(&currEigvals);
   AllocSpace(&oldEigvals);
@@ -202,37 +195,6 @@ inline int CPDecomp
     AllocSpace(&oldFactors_T[id_mode]);
   }
 
-  // The intermediate tensors are reused for efficiency
-  // We store the transpose of all intermediate and final
-  // Khatri-Rao products for convenience of computation
-  //
-  // As across the modes, the intermediate Khatri-Rao products
-  // will eventually take different shapes, kr_prod_T is
-  // first indexed by mode, then by the number of Khatri-Rao
-  // products already done
-  std::vector<std::vector<TensorContainer<cpu, 2, DType> > > kr_prod_T;
-  int kr_length;
-  for (int id_mode = 0; id_mode < order; ++id_mode) {
-    kr_length = 1;
-
-    std::vector<TensorContainer<cpu, 2, DType> > kr_prod_T_;
-    kr_prod_T_.emplace_back(Shape2(k, kr_length));
-    kr_prod_T_[0] = 1;
-
-    for (int q = order - 1; q >= 0; --q) {
-      if (q == id_mode)
-        continue;
-
-      kr_length *= in.size(q);
-      kr_prod_T_.emplace_back(Shape2(k, kr_length));
-    }
-
-    kr_prod_T.push_back(kr_prod_T_);
-  }
-
-  // Hadamard product
-  TensorContainer<cpu, 2, DType> hd_prod(Shape2(k, k));
-
   // Initialise random generator
   std::random_device rnd_device;
   std::mt19937 generator(rnd_device());
@@ -242,16 +204,18 @@ inline int CPDecomp
   DType currReconstructionError;
   for (int id_run = 0; id_run < restarts; ++id_run) {
     // Randomly initialise factor matrices
+    // If any error go to the next run of the multi-starts
     status = CPDecompInitFactors(currFactors_T, unfoldings,
       init_orthonormal_factors, &generator);
     if (status != 0) {
-#if DEBUG
-      std::cerr << "Init error\n";
-#endif
+      LOG(WARNING) << "Init error\n";
       continue;
     }
 
     // ALS
+    //
+    // If any step produces error, we terminate early the ALS
+    // and go to the next run of the multi-starts
     int iter = 0;
     while (iter < max_iter
         && status == 0
@@ -262,15 +226,10 @@ inline int CPDecomp
         Copy(oldFactors_T[id_mode], currFactors_T[id_mode]);
 
       for (int id_mode = 0; id_mode < order; ++id_mode) {
-        status = CPDecompUpdate
-          (currEigvals, currFactors_T,
-          unfoldings[id_mode], id_mode,
-          kr_prod_T[id_mode], hd_prod,
-          stream);
+        status = CPDecompUpdate(currEigvals, currFactors_T,
+          unfoldings[id_mode], id_mode);
         if (status != 0) {
-#if DEBUG
-          std::cerr << "Iter " << iter << " Update error\n";
-#endif
+          LOG(WARNING) << "Iter " << iter << " Update error\n";
           break;
         }
       }
@@ -278,9 +237,12 @@ inline int CPDecomp
       ++iter;
     }
 
+    // If any error we won't consider updating the optimal factor matrices
+    // and the optimal reconstruction error for the current run
     if (status != 0)
       continue;
 
+    // Update the optimal reconstruction error and factor matrices
     currReconstructionError = CPDecompReconstructionError
       (in, currEigvals, currFactors_T);
 #if DEBUG
@@ -305,6 +267,8 @@ inline int CPDecomp
   FreeSpace(&currEigvals);
   FreeSpace(&oldEigvals);
 
+  // Return success only if the optimal reconstruction error
+  // has been updated at least once
   if (reconstructionError < std::numeric_limits<DType>::infinity()) {
     CPDecompSortResults(eigvals, factors_T);
     return 0;
@@ -389,7 +353,7 @@ inline int CPDecompInitFactors
       _unfoldings.emplace_back(unfoldings[id_mode].shape_);
       Copy(_unfoldings[id_mode], unfoldings[id_mode]);
 
-      status = gesdd<cpu, DType>('S',
+      status = MXNET_LAPACK_gesdd<DType>(MXNET_LAPACK_ROW_MAJOR, 'S',
         static_cast<int>(_unfoldings[id_mode].size(0)),
         static_cast<int>(_unfoldings[id_mode].size(1)),
         _unfoldings[id_mode].dptr_, _unfoldings[id_mode].stride_,
@@ -422,79 +386,45 @@ inline int CPDecompUpdate
   (Tensor<cpu, 1, DType> eigvals,
   std::vector<Tensor<cpu, 2, DType> > factors_T,
   const Tensor<cpu, 2, DType> &unfolding,
-  int mode,
-  std::vector<TensorContainer<cpu, 2, DType> > kr_prod_T,
-  TensorContainer<cpu, 2, DType> hd_prod,
-  Stream<cpu> *stream) {
+  int mode) {
   int order = static_cast<int>(factors_T.size());
   int k = eigvals.size(0);
 
   for (auto &m : factors_T)
     CHECK_EQ(static_cast<int>(m.size(0)), k);
 
-  // Return value
+  // Compute dot(inv_krprod(ts_arr), unfolding.T()), where ts_arr
+  // is the reversed factors_T, excluding the original factors_T[mode].
+  //
+  // dot(inv_krprod(ts_arr), unfolding.T()) just gives the updated
+  // factors_T[mode], in the unnormalised form.
+
+  // Prepare ts_arr by reversing factors_T, and excluding the original
+  // factors_T[mode]
   int info;
-
-  // Compute khatri-rao product of C\odot B ...
-  // and hadamard product of C^T C * B^T B ...
-  int kr_length = 1;
-  int id_kr_prod = 1;
-  int d;
-
-  hd_prod = 1;
-
+  std::vector<Tensor<cpu, 2, DType> > ts_arr;
   for (int id_mode = order - 1; id_mode >= 0; --id_mode) {
     if (id_mode == mode)
       continue;
-
-    // Compute kr_prod_T[id_kr_prod] from kr_prod_T[id_kr_prod - 1] row by row
-    kr_prod_T[id_kr_prod] = 0;
-    d = factors_T[id_mode].size(1);
-    for (int i = 0; i < k; ++i) {
-      expr::BLASEngine<cpu, DType>::SetStream
-        (kr_prod_T[id_kr_prod].stream_);
-      expr::BLASEngine<cpu, DType>::ger
-        (kr_prod_T[id_kr_prod].stream_,
-        d, kr_length,
-        1,
-        factors_T[id_mode][i].dptr_, 1,
-        kr_prod_T[id_kr_prod - 1][i].dptr_, 1,
-        kr_prod_T[id_kr_prod][i].dptr_, d);
-    }
-    kr_length *= d;
-    ++id_kr_prod;
-
-    hd_prod = hd_prod *
-        implicit_dot(factors_T[id_mode], factors_T[id_mode].T());
+    ts_arr.push_back(factors_T[id_mode]);
   }
 
-  TensorContainer<cpu, 2, DType> rhs_T(Shape2(k, unfolding.size(0)));
-  rhs_T = implicit_dot(kr_prod_T[order - 1], unfolding.T());
+  // Compute inv_krprod for the tranposed factor matrices in ts_arr
+  Tensor<cpu, 2, DType> inv_kr(Shape2(k, unfolding.size(1)));
+  AllocSpace(&inv_kr);
+  inv_krprod(inv_kr, ts_arr, true);
 
-  // In order to compute rhs pinv(hd_prod) we try to solve for X
-  // such that
-  //
-  //     hd_prod X^T = rhs^T
-  //
-  // and update factors_T[mode] to be X^T
+  // Update the current transposed factor matrix
+  factors_T[mode] = implicit_dot(inv_kr, unfolding.T());
 
-  info = posv<cpu, DType>(k, unfolding.size(0),
-      hd_prod.dptr_, hd_prod.stride_,
-      rhs_T.dptr_, rhs_T.stride_);
-  if (info != 0) {
-    return info;
-  }
-  Copy(factors_T[mode], rhs_T);
-
+  // Normalise by row
   for (int j = 0; j < k; ++j) {
-    // Compute the L2-norm of Column j of factors[mode]
-    eigvals[j] = nrm2<cpu, DType>(factors_T[mode].size(1),
+    eigvals[j] = nrm2(factors_T[mode].size(1),
         factors_T[mode][j].dptr_, 1);
-
-    // Normalise Column j of factors[mode]
-    factors_T[mode][j] = factors_T[mode][j] / eigvals[j];
+    factors_T[mode][j] /= eigvals[j];
   }
 
+  FreeSpace(&inv_kr);
   return 0;
 }
 
@@ -507,12 +437,15 @@ inline bool CPDecompConverged
   DType eps) {
   int k = eigvals.size(0);
 
+  // Check if the relative norm of error is below eps for eigvals
   TensorContainer<cpu, 1, DType> eigval_diff(eigvals.shape_);
   eigval_diff = eigvals - oldEigvals;
-  if (nrm2<cpu, DType>(k, eigval_diff.dptr_, 1)
-      > eps * nrm2<cpu, DType>(k, oldEigvals.dptr_, 1))
+  if (nrm2(k, eigval_diff.dptr_, 1)
+      > eps * nrm2(k, oldEigvals.dptr_, 1))
     return false;
 
+  // Check if the relative norm of error is below eps for every row
+  // of every transposed factor matrix
   int d;
   for (int p = 0; p < static_cast<int>(factors_T.size()); ++p) {
     d = factors_T[p].size(1);
@@ -520,8 +453,8 @@ inline bool CPDecompConverged
     factors_diff = factors_T[p] - oldFactors_T[p];
 
     for (int i = 0; i < k; ++i) {
-      if (nrm2<cpu, DType>(d, factors_diff[i].dptr_, 1)
-          > eps * nrm2<cpu, DType>(d, oldFactors_T[p][i].dptr_, 1))
+      if (nrm2(d, factors_diff[i].dptr_, 1)
+          > eps * nrm2(d, oldFactors_T[p][i].dptr_, 1))
         return false;
     }
   }
@@ -550,17 +483,18 @@ inline void CPDecompSortResults
   int order = factors_T.size();
   int k = eigvals.size(0);
 
+  // Create temporary tensors
   TensorContainer<cpu, 1, DType> eigvals_(eigvals.shape_);
   std::vector<TensorContainer<cpu, 2, DType> > factors_T_;
-
-  Copy(eigvals_, eigvals);
   for (int id_mode = 0; id_mode < order; ++id_mode) {
     factors_T_.emplace_back(factors_T[id_mode].shape_);
-    Copy(factors_T_[id_mode], factors_T[id_mode]);
   }
 
+  // Args of eigvals in descending order
   std::vector<int> idx = sort_indexes(eigvals);
 
+  // Sort the eigvals and rows of every transposed factor matrix into
+  // the temporary tensors
   for (int i = 0; i < k; ++i) {
     eigvals_[i] = eigvals[idx[i]];
     for (int id_mode = 0; id_mode < order; ++id_mode) {
@@ -569,13 +503,12 @@ inline void CPDecompSortResults
     }
   }
 
+  // Copy the temporary tensors into final results
   Copy(eigvals, eigvals_);
   for (int id_mode = 0; id_mode < order; ++id_mode) {
     Copy(factors_T[id_mode], factors_T_[id_mode]);
   }
 }
-
-
 
 template <typename DType>
 inline void print1DTensor_(const Tensor<cpu, 1, DType> &t) {
