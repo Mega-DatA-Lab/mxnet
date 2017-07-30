@@ -412,7 +412,7 @@ inline int CPDecompUpdate
   // Compute inv_krprod for the tranposed factor matrices in ts_arr
   Tensor<cpu, 2, DType> inv_kr(Shape2(k, unfolding.size(1)));
   AllocSpace(&inv_kr);
-  inv_krprod(inv_kr, ts_arr, true);
+  inv_khatri_rao(inv_kr, ts_arr, true);
 
   // Update the current transposed factor matrix
   factors_T[mode] = implicit_dot(inv_kr, unfolding.T());
