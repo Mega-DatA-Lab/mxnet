@@ -31,6 +31,7 @@ class EvalMetric(object):
         self.name = name
         self.num = num
         self.reset()
+        self.allVals = []
 
     def update(self, labels, preds):
         """Updates the internal evaluation result.
@@ -66,13 +67,16 @@ class EvalMetric(object):
         """
         if self.num is None:
             if self.num_inst == 0:
+                self.allVals.append((self.name, float('nan')))
                 return (self.name, float('nan'))
             else:
+                self.allVals.append((self.name, self.sum_metric / self.num_inst))
                 return (self.name, self.sum_metric / self.num_inst)
         else:
             names = ['%s_%d'%(self.name, i) for i in range(self.num)]
             values = [x / y if y != 0 else float('nan') \
                 for x, y in zip(self.sum_metric, self.num_inst)]
+            self.allVals.append((names, values))
             return (names, values)
 
     def get_name_value(self):
