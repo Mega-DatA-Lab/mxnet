@@ -209,6 +209,9 @@ class BaseRNNCell(object):
         """
         args = args.copy()
         if not self._gate_names:
+	    #print('args unpack:')
+	    #for k, v in args.iteritems():
+            #    print('key', k, 'value:', v.asnumpy())
             return args
         h = self._num_hidden
         for group_name in ['i2h', 'h2h']:
@@ -238,6 +241,9 @@ class BaseRNNCell(object):
         """
         args = args.copy()
         if not self._gate_names:
+            #print('args pack:')
+            #for k, v in args.iteritems():
+            #    print('key', k, 'value:', v.asnumpy())
             return args
         for group_name in ['i2h', 'h2h']:
             weight = []

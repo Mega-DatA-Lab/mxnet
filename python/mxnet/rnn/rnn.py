@@ -39,6 +39,8 @@ def save_rnn_checkpoint(cells, prefix, epoch, symbol, arg_params, aux_params):
     if isinstance(cells, BaseRNNCell):
         cells = [cells]
     for cell in cells:
+	#print('cell:')
+	#cell.traverse()
         arg_params = cell.unpack_weights(arg_params)
     save_checkpoint(prefix, epoch, symbol, arg_params, aux_params)
 

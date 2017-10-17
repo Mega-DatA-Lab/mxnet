@@ -318,7 +318,7 @@ class DataParallelExecutorGroup(object):
             self._default_execs = [i for i in self.execs]
         self.bind_exec(data_shapes, label_shapes, reshape=True)
 
-    def set_params(self, arg_params, aux_params):
+    def set_params(self, arg_params, aux_params)#, allow_extra=False):
         """Assign, i.e. copy parameters to all the executors.
 
         Parameters

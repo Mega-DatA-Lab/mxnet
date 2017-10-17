@@ -345,6 +345,7 @@ class BaseModule(object):
             pad = eval_batch.pad
             outputs = [out[0:out.shape[0]-pad].copy() for out in self.get_outputs()]
 
+            #print 'prediction output:', outputs
             output_list.append(outputs)
 
         if len(output_list) == 0:
